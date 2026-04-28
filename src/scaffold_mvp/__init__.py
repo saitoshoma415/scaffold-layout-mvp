@@ -1,0 +1,1 @@
+"""Scaffold layout MVP package."""

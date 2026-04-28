@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "scaffold-layout-mvp"
+version = "0.1.0"
+description = "MVP for auto-proposing scaffold layout from floor plan images."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+  "numpy>=1.26.0",
+  "opencv-python>=4.9.0",
+  "pandas>=2.2.0",
+  "pydantic>=2.7.0",
+  "pytesseract>=0.3.10",
+  "streamlit>=1.35.0",
+  "xlsxwriter>=3.2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.2.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
