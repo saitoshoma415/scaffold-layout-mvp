@@ -32,7 +32,8 @@ def _decode_image(uploaded_file) -> np.ndarray:
 
 
 def _editable_segments(default_segments: list[Segment]) -> list[Segment]:
-    st.subheader("面別セグメント調整")
+    st.subheader("寸法入力（ここに平面図の数値を入力）")
+    st.info("平面図の外周を面ごとに分けて、`長さ(mm)` を入力してください。開口がある面は `開口控除(mm)` も入力します。")
     rows = [
         {
             "name": seg.name,
@@ -41,7 +42,19 @@ def _editable_segments(default_segments: list[Segment]) -> list[Segment]:
         }
         for seg in default_segments
     ]
-    df = st.data_editor(pd.DataFrame(rows), num_rows="dynamic", use_container_width=True, key="segment_editor")
+    df = st.data_editor(
+        pd.DataFrame(rows),
+        num_rows="dynamic",
+        use_container_width=True,
+        key="segment_editor",
+        column_config={
+            "name": st.column_config.TextColumn("面名", help="例: 北面 / 南面 / 東面 / 西面"),
+            "length_mm": st.column_config.NumberColumn("長さ(mm)", min_value=0.0, step=100.0),
+            "opening_deduction_mm": st.column_config.NumberColumn(
+                "開口控除(mm)", min_value=0.0, step=50.0, help="窓・出入口などで足場不要となる長さ"
+            ),
+        },
+    )
     segments: list[Segment] = []
     for _, row in df.iterrows():
         if not row["name"]:
@@ -62,6 +75,13 @@ def main() -> None:
     st.caption("MVP: 手入力寸法 -> 標準ルール割付 -> 人が調整 -> 帳票出力")
 
     use_image = st.toggle("画像読取を使う（任意）", value=False)
+    with st.expander("入力ガイド", expanded=True):
+        st.markdown(
+            "- 1行が1つの面です（例: 北面、東面）。\n"
+            "- `長さ(mm)` はその面の総延長を入力します。\n"
+            "- `開口控除(mm)` は窓や通路など、足場不要分を差し引く長さです。\n"
+            "- 入力後、下に `自動提案スパン` と `部材集計` が表示されます。"
+        )
 
     default_segments = [
         Segment(name="North", length_mm=10000.0),
