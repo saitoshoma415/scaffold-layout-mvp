@@ -7,11 +7,19 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from scaffold_mvp.config import StandardLayoutRule
-from scaffold_mvp.image_pipeline import run_pipeline
-from scaffold_mvp.layout_engine import allocate_layout
-from scaffold_mvp.models import Segment
-from scaffold_mvp.reporting import to_dataframes, to_excel_bytes
+try:
+    from scaffold_mvp.config import StandardLayoutRule
+    from scaffold_mvp.image_pipeline import run_pipeline
+    from scaffold_mvp.layout_engine import allocate_layout
+    from scaffold_mvp.models import Segment
+    from scaffold_mvp.reporting import to_dataframes, to_excel_bytes
+except ModuleNotFoundError:
+    # Streamlit Cloud may execute this file directly with its directory on sys.path.
+    from config import StandardLayoutRule
+    from image_pipeline import run_pipeline
+    from layout_engine import allocate_layout
+    from models import Segment
+    from reporting import to_dataframes, to_excel_bytes
 
 
 def _decode_image(uploaded_file) -> np.ndarray:
