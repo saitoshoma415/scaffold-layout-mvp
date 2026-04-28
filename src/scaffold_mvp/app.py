@@ -69,6 +69,32 @@ def _editable_segments(default_segments: list[Segment]) -> list[Segment]:
     return segments
 
 
+def _build_clearance_proposal_df(segments: list[Segment], preferred_span_mm: float) -> pd.DataFrame:
+    rows = []
+    for seg in segments:
+        effective = max(0.0, seg.length_mm - seg.opening_deduction_mm)
+        if preferred_span_mm <= 0:
+            scaffold_total = effective
+        else:
+            span_count = int(effective // preferred_span_mm)
+            scaffold_total = span_count * preferred_span_mm
+            if scaffold_total <= 0 and effective > 0:
+                scaffold_total = effective
+
+        side_gap = max(0.0, (effective - scaffold_total) / 2.0)
+        rows.append(
+            {
+                "面名": seg.name,
+                "入力長さ(mm)": round(seg.length_mm, 1),
+                "開口控除(mm)": round(seg.opening_deduction_mm, 1),
+                "有効長(mm)": round(effective, 1),
+                "足場総延長提案(mm)": round(scaffold_total, 1),
+                "左右離れ提案(mm)": round(side_gap, 1),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
 def main() -> None:
     st.set_page_config(page_title="住宅平面図から足場割付を自動提案", layout="wide")
     st.title("住宅平面図から足場割付を自動提案")
@@ -119,9 +145,13 @@ def main() -> None:
     segments = _editable_segments(default_segments)
     result = allocate_layout(segments, rule)
     allocations_df, materials_df = to_dataframes(result)
+    clearance_df = _build_clearance_proposal_df(segments, preferred)
 
     st.subheader("自動提案スパン")
     st.dataframe(allocations_df, use_container_width=True)
+    st.subheader("離れ提案（標準スパン優先）")
+    st.caption("例: 面長10000mmで優先スパン1800mmの場合、足場総延長9000mm・左右離れ500mmを提案")
+    st.dataframe(clearance_df, use_container_width=True)
     st.subheader("部材集計")
     st.dataframe(materials_df, use_container_width=True)
 
