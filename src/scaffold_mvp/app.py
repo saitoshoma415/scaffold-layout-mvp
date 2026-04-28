@@ -69,19 +69,71 @@ def _editable_segments(default_segments: list[Segment]) -> list[Segment]:
     return segments
 
 
-def _build_clearance_proposal_df(segments: list[Segment], preferred_span_mm: float) -> pd.DataFrame:
+def _choose_span_for_anti_ranges(
+    effective_length_mm: float,
+    preferred_span_mm: float,
+    wide_min_mm: float,
+    wide_max_mm: float,
+    narrow_min_mm: float,
+    narrow_max_mm: float,
+) -> tuple[float, float, str]:
+    if effective_length_mm <= 0 or preferred_span_mm <= 0:
+        return effective_length_mm, 0.0, "対象外"
+
+    max_count = int(effective_length_mm // preferred_span_mm)
+    if max_count <= 0:
+        return effective_length_mm, 0.0, "スパン不足"
+
+    candidates: list[tuple[float, float, str, float]] = []
+    for count in range(max_count, 0, -1):
+        scaffold_total = count * preferred_span_mm
+        side_gap = (effective_length_mm - scaffold_total) / 2.0
+        if side_gap < 0:
+            continue
+
+        anti_type = ""
+        target_center = 0.0
+        if wide_min_mm <= side_gap <= wide_max_mm:
+            anti_type = "広いアンチ"
+            target_center = (wide_min_mm + wide_max_mm) / 2.0
+        elif narrow_min_mm <= side_gap <= narrow_max_mm:
+            anti_type = "狭いアンチ"
+            target_center = (narrow_min_mm + narrow_max_mm) / 2.0
+        else:
+            continue
+
+        score = abs(side_gap - target_center)
+        candidates.append((score, scaffold_total, side_gap, anti_type))
+
+    if candidates:
+        _, scaffold_total, side_gap, anti_type = min(candidates, key=lambda x: x[0])
+        return scaffold_total, side_gap, anti_type
+
+    base_count = int(effective_length_mm // preferred_span_mm)
+    scaffold_total = base_count * preferred_span_mm if base_count > 0 else effective_length_mm
+    side_gap = max(0.0, (effective_length_mm - scaffold_total) / 2.0)
+    return scaffold_total, side_gap, "範囲外"
+
+
+def _build_clearance_proposal_df(
+    segments: list[Segment],
+    preferred_span_mm: float,
+    wide_min_mm: float,
+    wide_max_mm: float,
+    narrow_min_mm: float,
+    narrow_max_mm: float,
+) -> pd.DataFrame:
     rows = []
     for seg in segments:
         effective = max(0.0, seg.length_mm - seg.opening_deduction_mm)
-        if preferred_span_mm <= 0:
-            scaffold_total = effective
-        else:
-            span_count = int(effective // preferred_span_mm)
-            scaffold_total = span_count * preferred_span_mm
-            if scaffold_total <= 0 and effective > 0:
-                scaffold_total = effective
-
-        side_gap = max(0.0, (effective - scaffold_total) / 2.0)
+        scaffold_total, side_gap, anti_type = _choose_span_for_anti_ranges(
+            effective,
+            preferred_span_mm,
+            wide_min_mm,
+            wide_max_mm,
+            narrow_min_mm,
+            narrow_max_mm,
+        )
         rows.append(
             {
                 "面名": seg.name,
@@ -90,6 +142,7 @@ def _build_clearance_proposal_df(segments: list[Segment], preferred_span_mm: flo
                 "有効長(mm)": round(effective, 1),
                 "足場総延長提案(mm)": round(scaffold_total, 1),
                 "左右離れ提案(mm)": round(side_gap, 1),
+                "アンチ提案": anti_type,
             }
         )
     return pd.DataFrame(rows)
@@ -141,16 +194,31 @@ def main() -> None:
     min_end = st.number_input("端部最小スパン (mm)", min_value=300.0, value=900.0, step=50.0)
     max_span = st.number_input("最大スパン (mm)", min_value=500.0, value=1800.0, step=50.0)
     rule = StandardLayoutRule(preferred_span_mm=preferred, min_end_span_mm=min_end, max_span_mm=max_span)
+    st.caption("アンチ幅条件")
+    c1, c2 = st.columns(2)
+    with c1:
+        wide_min = st.number_input("広いアンチ最小(mm)", min_value=0.0, value=730.0, step=10.0)
+        wide_max = st.number_input("広いアンチ最大(mm)", min_value=0.0, value=1050.0, step=10.0)
+    with c2:
+        narrow_min = st.number_input("狭いアンチ最小(mm)", min_value=0.0, value=430.0, step=10.0)
+        narrow_max = st.number_input("狭いアンチ最大(mm)", min_value=0.0, value=650.0, step=10.0)
 
     segments = _editable_segments(default_segments)
     result = allocate_layout(segments, rule)
     allocations_df, materials_df = to_dataframes(result)
-    clearance_df = _build_clearance_proposal_df(segments, preferred)
+    clearance_df = _build_clearance_proposal_df(
+        segments,
+        preferred,
+        wide_min,
+        wide_max,
+        narrow_min,
+        narrow_max,
+    )
 
     st.subheader("自動提案スパン")
     st.dataframe(allocations_df, use_container_width=True)
     st.subheader("離れ提案（標準スパン優先）")
-    st.caption("例: 面長10000mmで優先スパン1800mmの場合、足場総延長9000mm・左右離れ500mmを提案")
+    st.caption("広いアンチ(730-1050) / 狭いアンチ(430-650) に収まる離れを優先して提案")
     st.dataframe(clearance_df, use_container_width=True)
     st.subheader("部材集計")
     st.dataframe(materials_df, use_container_width=True)
