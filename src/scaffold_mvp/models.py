@@ -9,6 +9,8 @@ class Segment:
     name: str
     length_mm: float
     opening_deduction_mm: float = 0.0
+    site_max_gap_mm: float | None = None
+    site_min_gap_mm: float | None = None
 
     @property
     def effective_length_mm(self) -> float:

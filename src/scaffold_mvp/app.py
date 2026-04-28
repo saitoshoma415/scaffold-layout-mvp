@@ -32,13 +32,19 @@ def _decode_image(uploaded_file) -> np.ndarray:
 
 
 def _editable_segments(default_segments: list[Segment]) -> list[Segment]:
-    st.subheader("寸法入力（ここに平面図の数値を入力）")
-    st.info("平面図の外周を面ごとに分けて、`長さ(mm)` を入力してください。開口がある面は `開口控除(mm)` も入力します。")
+    st.subheader("寸法・敷地入力（ここに平面図の数値を入力）")
+    st.info(
+        "平面図の外周を面ごとに分けて、`長さ(mm)` を入力してください。"
+        "開口がある面は `開口控除(mm)` も入力します。"
+        "敷地条件がある面は `敷地側最大離れ(mm)` を入力すると、その上限を超えない離れを優先して提案します。"
+    )
     rows = [
         {
             "name": seg.name,
             "length_mm": round(seg.length_mm, 1),
             "opening_deduction_mm": round(seg.opening_deduction_mm, 1),
+            "site_max_gap_mm": seg.site_max_gap_mm,
+            "site_min_gap_mm": seg.site_min_gap_mm,
         }
         for seg in default_segments
     ]
@@ -53,66 +59,121 @@ def _editable_segments(default_segments: list[Segment]) -> list[Segment]:
             "opening_deduction_mm": st.column_config.NumberColumn(
                 "開口控除(mm)", min_value=0.0, step=50.0, help="窓・出入口などで足場不要となる長さ"
             ),
+            "site_max_gap_mm": st.column_config.NumberColumn(
+                "敷地側最大離れ(mm)",
+                min_value=0.0,
+                step=50.0,
+                help="敷地境界・隣地・障害物などで、端部離れが取れない上限（片側ではなく左右合計の制約を想定）",
+            ),
+            "site_min_gap_mm": st.column_config.NumberColumn(
+                "敷地側最小離れ(mm)",
+                min_value=0.0,
+                step=50.0,
+                help="最低限確保したい離れ（任意）。未入力なら0扱い",
+            ),
         },
     )
     segments: list[Segment] = []
     for _, row in df.iterrows():
         if not row["name"]:
             continue
+        site_max = row["site_max_gap_mm"]
+        site_min = row["site_min_gap_mm"]
         segments.append(
             Segment(
                 name=str(row["name"]),
                 length_mm=float(row["length_mm"]),
                 opening_deduction_mm=float(row["opening_deduction_mm"]),
+                site_max_gap_mm=None if pd.isna(site_max) else float(site_max),
+                site_min_gap_mm=None if pd.isna(site_min) else float(site_min),
             )
         )
     return segments
 
 
-def _choose_span_for_anti_ranges(
+def _distance_to_intervals(value: float, intervals: list[tuple[float, float]]) -> float:
+    if not intervals:
+        return 0.0
+    distances: list[float] = []
+    for lo, hi in intervals:
+        if lo <= value <= hi:
+            return 0.0
+        if value < lo:
+            distances.append(lo - value)
+        else:
+            distances.append(value - hi)
+    return float(min(distances))
+
+
+def _choose_span_for_site_and_anti(
     effective_length_mm: float,
     preferred_span_mm: float,
     wide_min_mm: float,
     wide_max_mm: float,
     narrow_min_mm: float,
     narrow_max_mm: float,
-) -> tuple[float, float, str]:
+    site_max_gap_mm: float | None,
+    site_min_gap_mm: float | None,
+) -> tuple[float, float, str, str]:
     if effective_length_mm <= 0 or preferred_span_mm <= 0:
-        return effective_length_mm, 0.0, "対象外"
+        return effective_length_mm, 0.0, "対象外", ""
 
     max_count = int(effective_length_mm // preferred_span_mm)
     if max_count <= 0:
-        return effective_length_mm, 0.0, "スパン不足"
+        return effective_length_mm, 0.0, "スパン不足", ""
 
-    candidates: list[tuple[float, float, str, float]] = []
+    site_max = float(site_max_gap_mm) if site_max_gap_mm is not None else float("inf")
+    site_min = float(site_min_gap_mm) if site_min_gap_mm is not None else 0.0
+
+    anti_intervals = [(wide_min_mm, wide_max_mm), (narrow_min_mm, narrow_max_mm)]
+    wide_center = (wide_min_mm + wide_max_mm) / 2.0
+    narrow_center = (narrow_min_mm + narrow_max_mm) / 2.0
+
+    best: tuple[float, float, float, str, str] | None = None
     for count in range(max_count, 0, -1):
         scaffold_total = count * preferred_span_mm
         side_gap = (effective_length_mm - scaffold_total) / 2.0
         if side_gap < 0:
             continue
 
+        site_penalty = 0.0
+        if side_gap > site_max:
+            site_penalty += (side_gap - site_max) * 1_000_000.0
+        if side_gap < site_min:
+            site_penalty += (site_min - side_gap) * 1_000_000.0
+
         anti_type = ""
-        target_center = 0.0
+        anti_penalty = 0.0
         if wide_min_mm <= side_gap <= wide_max_mm:
             anti_type = "広いアンチ"
-            target_center = (wide_min_mm + wide_max_mm) / 2.0
+            anti_penalty = abs(side_gap - wide_center)
         elif narrow_min_mm <= side_gap <= narrow_max_mm:
             anti_type = "狭いアンチ"
-            target_center = (narrow_min_mm + narrow_max_mm) / 2.0
+            anti_penalty = abs(side_gap - narrow_center)
         else:
-            continue
+            anti_type = "範囲外"
+            anti_penalty = _distance_to_intervals(side_gap, anti_intervals) * 10_000.0
 
-        score = abs(side_gap - target_center)
-        candidates.append((score, scaffold_total, side_gap, anti_type))
+        score = site_penalty + anti_penalty
+        candidate = (score, scaffold_total, side_gap, anti_type, "")
+        if best is None or score < best[0]:
+            best = candidate
 
-    if candidates:
-        _, scaffold_total, side_gap, anti_type = min(candidates, key=lambda x: x[0])
-        return scaffold_total, side_gap, anti_type
+    if best is None:
+        base_count = int(effective_length_mm // preferred_span_mm)
+        scaffold_total = base_count * preferred_span_mm if base_count > 0 else effective_length_mm
+        side_gap = max(0.0, (effective_length_mm - scaffold_total) / 2.0)
+        return scaffold_total, side_gap, "範囲外", ""
 
-    base_count = int(effective_length_mm // preferred_span_mm)
-    scaffold_total = base_count * preferred_span_mm if base_count > 0 else effective_length_mm
-    side_gap = max(0.0, (effective_length_mm - scaffold_total) / 2.0)
-    return scaffold_total, side_gap, "範囲外"
+    _, scaffold_total, side_gap, anti_type, _ = best
+
+    notes: list[str] = []
+    if site_max_gap_mm is not None and side_gap > site_max + 1e-6:
+        notes.append("敷地上限超過")
+    if site_min_gap_mm is not None and side_gap + 1e-6 < site_min:
+        notes.append("敷地下限未達")
+
+    return scaffold_total, side_gap, anti_type, " / ".join(notes)
 
 
 def _build_clearance_proposal_df(
@@ -126,23 +187,28 @@ def _build_clearance_proposal_df(
     rows = []
     for seg in segments:
         effective = max(0.0, seg.length_mm - seg.opening_deduction_mm)
-        scaffold_total, side_gap, anti_type = _choose_span_for_anti_ranges(
+        scaffold_total, side_gap, anti_type, site_note = _choose_span_for_site_and_anti(
             effective,
             preferred_span_mm,
             wide_min_mm,
             wide_max_mm,
             narrow_min_mm,
             narrow_max_mm,
+            seg.site_max_gap_mm,
+            seg.site_min_gap_mm,
         )
         rows.append(
             {
                 "面名": seg.name,
                 "入力長さ(mm)": round(seg.length_mm, 1),
                 "開口控除(mm)": round(seg.opening_deduction_mm, 1),
+                "敷地側最大離れ(mm)": "" if seg.site_max_gap_mm is None else round(float(seg.site_max_gap_mm), 1),
+                "敷地側最小離れ(mm)": "" if seg.site_min_gap_mm is None else round(float(seg.site_min_gap_mm), 1),
                 "有効長(mm)": round(effective, 1),
                 "足場総延長提案(mm)": round(scaffold_total, 1),
                 "左右離れ提案(mm)": round(side_gap, 1),
                 "アンチ提案": anti_type,
+                "敷地メモ": site_note,
             }
         )
     return pd.DataFrame(rows)
@@ -159,6 +225,7 @@ def main() -> None:
             "- 1行が1つの面です（例: 北面、東面）。\n"
             "- `長さ(mm)` はその面の総延長を入力します。\n"
             "- `開口控除(mm)` は窓や通路など、足場不要分を差し引く長さです。\n"
+            "- `敷地側最大離れ(mm)` は、その面で左右に取れる離れの上限（敷地・隣地・障害物など）です。\n"
             "- 入力後、下に `自動提案スパン` と `部材集計` が表示されます。"
         )
 
