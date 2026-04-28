@@ -59,26 +59,36 @@ def _editable_segments(default_segments: list[Segment]) -> list[Segment]:
 def main() -> None:
     st.set_page_config(page_title="住宅平面図から足場割付を自動提案", layout="wide")
     st.title("住宅平面図から足場割付を自動提案")
-    st.caption("MVP: 画像入力 -> 標準ルール割付 -> 人が調整 -> 帳票出力")
+    st.caption("MVP: 手入力寸法 -> 標準ルール割付 -> 人が調整 -> 帳票出力")
 
-    uploaded = st.file_uploader("平面図画像をアップロード", type=["png", "jpg", "jpeg"])
-    if not uploaded:
-        st.info("画像をアップロードしてください。")
-        return
+    use_image = st.toggle("画像読取を使う（任意）", value=False)
 
-    image = _decode_image(uploaded)
-    pipe = run_pipeline(image)
+    default_segments = [
+        Segment(name="North", length_mm=10000.0),
+        Segment(name="East", length_mm=8000.0),
+        Segment(name="South", length_mm=10000.0),
+        Segment(name="West", length_mm=8000.0),
+    ]
 
-    col1, col2 = st.columns(2)
-    with col1:
-        st.subheader("入力図面")
-        st.image(cv2.cvtColor(image, cv2.COLOR_BGR2RGB), use_container_width=True)
-    with col2:
-        st.subheader("前処理結果")
-        st.image(pipe.processed_image, clamp=True, use_container_width=True)
-        st.metric("外周長(px)", f"{pipe.perimeter_px:.1f}")
-        st.metric("縮尺(mm/px)", f"{pipe.mm_per_px:.4f}")
-        st.metric("OCR検出寸法数", f"{len(pipe.dimensions)}")
+    if use_image:
+        uploaded = st.file_uploader("平面図画像をアップロード", type=["png", "jpg", "jpeg"])
+        if uploaded:
+            image = _decode_image(uploaded)
+            pipe = run_pipeline(image)
+            default_segments = pipe.segments or default_segments
+
+            col1, col2 = st.columns(2)
+            with col1:
+                st.subheader("入力図面")
+                st.image(cv2.cvtColor(image, cv2.COLOR_BGR2RGB), use_container_width=True)
+            with col2:
+                st.subheader("前処理結果")
+                st.image(pipe.processed_image, clamp=True, use_container_width=True)
+                st.metric("外周長(px)", f"{pipe.perimeter_px:.1f}")
+                st.metric("縮尺(mm/px)", f"{pipe.mm_per_px:.4f}")
+                st.metric("OCR検出寸法数", f"{len(pipe.dimensions)}")
+        else:
+            st.info("画像読取を使う場合は画像をアップロードしてください。未アップロード時は手入力で計算します。")
 
     st.subheader("割付ルール")
     preferred = st.number_input("優先スパン (mm)", min_value=300.0, value=1800.0, step=50.0)
@@ -86,7 +96,7 @@ def main() -> None:
     max_span = st.number_input("最大スパン (mm)", min_value=500.0, value=1800.0, step=50.0)
     rule = StandardLayoutRule(preferred_span_mm=preferred, min_end_span_mm=min_end, max_span_mm=max_span)
 
-    segments = _editable_segments(pipe.segments)
+    segments = _editable_segments(default_segments)
     result = allocate_layout(segments, rule)
     allocations_df, materials_df = to_dataframes(result)
 
