@@ -31,59 +31,96 @@ def _decode_image(uploaded_file) -> np.ndarray:
     return image
 
 
-def _editable_segments(default_segments: list[Segment]) -> list[Segment]:
-    st.subheader("寸法・敷地入力（ここに平面図の数値を入力）")
-    st.info(
-        "平面図の外周を面ごとに分けて、`長さ(mm)` を入力してください。"
-        "開口がある面は `開口控除(mm)` も入力します。"
-        "敷地条件がある面は `敷地側最大離れ(mm)` を入力すると、その上限を超えない離れを優先して提案します。"
-    )
-    rows = [
+def _segments_to_house_rows(segments: list[Segment]) -> list[dict]:
+    return [
         {
             "name": seg.name,
             "length_mm": round(seg.length_mm, 1),
             "opening_deduction_mm": round(seg.opening_deduction_mm, 1),
-            "site_max_gap_mm": seg.site_max_gap_mm,
-            "site_min_gap_mm": seg.site_min_gap_mm,
         }
-        for seg in default_segments
+        for seg in segments
     ]
-    df = st.data_editor(
+
+
+def _edit_house_dimensions(default_segments: list[Segment]) -> pd.DataFrame:
+    st.subheader("1) 家の寸法を入力")
+    st.info("外周を面ごとに分けて `長さ(mm)` を入力します。開口がある面は `開口控除(mm)` も入力します。")
+    rows = _segments_to_house_rows(default_segments)
+    return st.data_editor(
         pd.DataFrame(rows),
         num_rows="dynamic",
         use_container_width=True,
-        key="segment_editor",
+        key="house_editor",
         column_config={
             "name": st.column_config.TextColumn("面名", help="例: 北面 / 南面 / 東面 / 西面"),
             "length_mm": st.column_config.NumberColumn("長さ(mm)", min_value=0.0, step=100.0),
             "opening_deduction_mm": st.column_config.NumberColumn(
                 "開口控除(mm)", min_value=0.0, step=50.0, help="窓・出入口などで足場不要となる長さ"
             ),
+        },
+    )
+
+
+def _edit_site_constraints(house_df: pd.DataFrame) -> pd.DataFrame:
+    st.subheader("2) 敷地条件を入力")
+    st.info("`敷地側最大離れ(mm)` は、その面で左右に取れる離れの上限（敷地・隣地・障害物など）です。")
+    base_names = [str(x) for x in house_df["name"].tolist() if str(x)]
+    rows = [{"name": name, "site_max_gap_mm": None, "site_min_gap_mm": None} for name in base_names]
+    return st.data_editor(
+        pd.DataFrame(rows),
+        num_rows="dynamic",
+        use_container_width=True,
+        key="site_editor",
+        column_config={
+            "name": st.column_config.TextColumn("面名", help="1) の面名と一致させてください"),
             "site_max_gap_mm": st.column_config.NumberColumn(
                 "敷地側最大離れ(mm)",
                 min_value=0.0,
                 step=50.0,
-                help="敷地境界・隣地・障害物などで、端部離れが取れない上限（片側ではなく左右合計の制約を想定）",
+                help="離れの上限。未入力なら制約なし",
             ),
             "site_min_gap_mm": st.column_config.NumberColumn(
                 "敷地側最小離れ(mm)",
                 min_value=0.0,
                 step=50.0,
-                help="最低限確保したい離れ（任意）。未入力なら0扱い",
+                help="離れの下限（任意）。未入力なら0扱い",
             ),
         },
     )
-    segments: list[Segment] = []
-    for _, row in df.iterrows():
-        if not row["name"]:
+
+
+def _merge_house_and_site(house_df: pd.DataFrame, site_df: pd.DataFrame) -> list[Segment]:
+    house_by_name: dict[str, dict] = {}
+    for _, row in house_df.iterrows():
+        name = str(row["name"]).strip()
+        if not name:
             continue
-        site_max = row["site_max_gap_mm"]
-        site_min = row["site_min_gap_mm"]
+        house_by_name[name] = row
+
+    site_by_name: dict[str, dict] = {}
+    for _, row in site_df.iterrows():
+        name = str(row["name"]).strip()
+        if not name:
+            continue
+        site_by_name[name] = row
+
+    missing_site = sorted(set(house_by_name.keys()) - set(site_by_name.keys()))
+    extra_site = sorted(set(site_by_name.keys()) - set(house_by_name.keys()))
+    if missing_site:
+        st.warning("敷地表に面名が無い行があります: " + ", ".join(missing_site))
+    if extra_site:
+        st.warning("家の寸法表に無い面名が敷地表にあります: " + ", ".join(extra_site))
+
+    segments: list[Segment] = []
+    for name, hrow in house_by_name.items():
+        srow = site_by_name.get(name, {})
+        site_max = srow.get("site_max_gap_mm") if isinstance(srow, dict) else None
+        site_min = srow.get("site_min_gap_mm") if isinstance(srow, dict) else None
         segments.append(
             Segment(
-                name=str(row["name"]),
-                length_mm=float(row["length_mm"]),
-                opening_deduction_mm=float(row["opening_deduction_mm"]),
+                name=name,
+                length_mm=float(hrow["length_mm"]),
+                opening_deduction_mm=float(hrow["opening_deduction_mm"]),
                 site_max_gap_mm=None if pd.isna(site_max) else float(site_max),
                 site_min_gap_mm=None if pd.isna(site_min) else float(site_min),
             )
@@ -217,16 +254,14 @@ def _build_clearance_proposal_df(
 def main() -> None:
     st.set_page_config(page_title="住宅平面図から足場割付を自動提案", layout="wide")
     st.title("住宅平面図から足場割付を自動提案")
-    st.caption("MVP: 手入力寸法 -> 標準ルール割付 -> 人が調整 -> 帳票出力")
+    st.caption("MVP: 家の寸法 -> 敷地 -> 離れ -> 割付・帳票")
 
-    use_image = st.toggle("画像読取を使う（任意）", value=False)
-    with st.expander("入力ガイド", expanded=True):
+    with st.expander("入力ガイド（図面作成の流れ）", expanded=True):
         st.markdown(
-            "- 1行が1つの面です（例: 北面、東面）。\n"
-            "- `長さ(mm)` はその面の総延長を入力します。\n"
-            "- `開口控除(mm)` は窓や通路など、足場不要分を差し引く長さです。\n"
-            "- `敷地側最大離れ(mm)` は、その面で左右に取れる離れの上限（敷地・隣地・障害物など）です。\n"
-            "- 入力後、下に `自動提案スパン` と `部材集計` が表示されます。"
+            "1. 家の寸法（面ごとの延長）を入力\n"
+            "2. 敷地条件（面ごとの離れの上限/下限）を入力\n"
+            "3. 離れ提案を確認（アンチ幅レンジと敷地条件を両立するよう自動計算）\n"
+            "4. 割付・帳票を出力"
         )
 
     default_segments = [
@@ -236,12 +271,17 @@ def main() -> None:
         Segment(name="West", length_mm=8000.0),
     ]
 
+    house_df = _edit_house_dimensions(default_segments)
+    site_df = _edit_site_constraints(house_df)
+    segments = _merge_house_and_site(house_df, site_df)
+
+    use_image = st.toggle("画像読取を使う（任意）", value=False)
     if use_image:
         uploaded = st.file_uploader("平面図画像をアップロード", type=["png", "jpg", "jpeg"])
         if uploaded:
             image = _decode_image(uploaded)
             pipe = run_pipeline(image)
-            default_segments = pipe.segments or default_segments
+            preview_segments = pipe.segments or default_segments
 
             col1, col2 = st.columns(2)
             with col1:
@@ -253,10 +293,13 @@ def main() -> None:
                 st.metric("外周長(px)", f"{pipe.perimeter_px:.1f}")
                 st.metric("縮尺(mm/px)", f"{pipe.mm_per_px:.4f}")
                 st.metric("OCR検出寸法数", f"{len(pipe.dimensions)}")
+            st.caption("※ 画像から推定した寸法は参考です。必要に応じて 1) の表を手で修正してください。")
+            with st.expander("画像推定の寸法プレビュー（任意）", expanded=False):
+                st.dataframe(pd.DataFrame(_segments_to_house_rows(preview_segments)), use_container_width=True)
         else:
-            st.info("画像読取を使う場合は画像をアップロードしてください。未アップロード時は手入力で計算します。")
+            st.info("画像読取を使う場合は画像をアップロードしてください（任意）。")
 
-    st.subheader("割付ルール")
+    st.subheader("3) 離れ計算の条件")
     preferred = st.number_input("優先スパン (mm)", min_value=300.0, value=1800.0, step=50.0)
     min_end = st.number_input("端部最小スパン (mm)", min_value=300.0, value=900.0, step=50.0)
     max_span = st.number_input("最大スパン (mm)", min_value=500.0, value=1800.0, step=50.0)
@@ -270,9 +313,6 @@ def main() -> None:
         narrow_min = st.number_input("狭いアンチ最小(mm)", min_value=0.0, value=430.0, step=10.0)
         narrow_max = st.number_input("狭いアンチ最大(mm)", min_value=0.0, value=650.0, step=10.0)
 
-    segments = _editable_segments(default_segments)
-    result = allocate_layout(segments, rule)
-    allocations_df, materials_df = to_dataframes(result)
     clearance_df = _build_clearance_proposal_df(
         segments,
         preferred,
@@ -282,11 +322,15 @@ def main() -> None:
         narrow_max,
     )
 
+    st.subheader("離れ提案（標準スパン優先）")
+    st.caption("広いアンチ(730-1050) / 狭いアンチ(430-650) に収まる離れを優先し、敷地の上限/下限も考慮します")
+    st.dataframe(clearance_df, use_container_width=True)
+
+    st.subheader("4) 割付・帳票")
+    result = allocate_layout(segments, rule)
+    allocations_df, materials_df = to_dataframes(result)
     st.subheader("自動提案スパン")
     st.dataframe(allocations_df, use_container_width=True)
-    st.subheader("離れ提案（標準スパン優先）")
-    st.caption("広いアンチ(730-1050) / 狭いアンチ(430-650) に収まる離れを優先して提案")
-    st.dataframe(clearance_df, use_container_width=True)
     st.subheader("部材集計")
     st.dataframe(materials_df, use_container_width=True)
 
