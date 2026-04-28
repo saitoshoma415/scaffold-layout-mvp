@@ -9,7 +9,10 @@ import cv2
 import numpy as np
 import pytesseract
 
-from .models import Segment
+try:
+    from .models import Segment
+except ImportError:
+    from models import Segment
 
 
 @dataclass

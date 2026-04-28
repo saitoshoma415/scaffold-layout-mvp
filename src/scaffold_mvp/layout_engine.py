@@ -2,8 +2,12 @@ from __future__ import annotations
 
 from typing import List
 
-from .config import StandardLayoutRule
-from .models import LayoutResult, ScaffoldMaterialSummary, Segment, SpanAllocation
+try:
+    from .config import StandardLayoutRule
+    from .models import LayoutResult, ScaffoldMaterialSummary, Segment, SpanAllocation
+except ImportError:
+    from config import StandardLayoutRule
+    from models import LayoutResult, ScaffoldMaterialSummary, Segment, SpanAllocation
 
 
 def _split_segment_length(total_mm: float, rule: StandardLayoutRule) -> List[float]:

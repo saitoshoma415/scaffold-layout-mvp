@@ -5,7 +5,10 @@ from typing import Dict, List
 
 import pandas as pd
 
-from .models import LayoutResult
+try:
+    from .models import LayoutResult
+except ImportError:
+    from models import LayoutResult
 
 
 def allocation_rows(result: LayoutResult) -> List[Dict[str, float | str | int]]:
